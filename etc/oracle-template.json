@@ -1,0 +1,4 @@
+{
+    "prolog": "load data\nINFILE 'loader2.dat'\nINTO TABLE IMP_{}\nAPPEND\nFIELDS TERMINATED BY ','\n(",
+    "epilog": ")"
+}

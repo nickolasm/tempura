@@ -1,0 +1,4 @@
+{
+    "prolog": "CREATE TABLE IMP_{}\n(",
+    "epilog": ");"
+}

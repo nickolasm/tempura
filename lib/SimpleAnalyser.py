@@ -1,4 +1,5 @@
 import csv
+import json
 import string
 import cx_Oracle
 import datetime as dt
@@ -7,11 +8,11 @@ import math
 
 
 class SimpleAnalyser(object):
-    def __init__(self, filename, config, logger, debug_flag):
+    def __init__(self, filename, config, logger, language):
         self.filename = filename
+        self.language = language
         self.config = config
         self.logger = logger
-        self.debug = debug_flag
         self.date_formats = (
             '%Y',
             '%b %d, %Y',
@@ -35,7 +36,7 @@ class SimpleAnalyser(object):
         self.data_rows = None
 
     def roundup(self, x):
-        return int(math.ceil(x / 10.0)) * 10
+        return int(math.ceil((x + x * int(self.config['increase_column_length_factor'])) / 10.0)) * 10
 
     def date_oracle(self, string_):
         return string_.replace('%Y', 'YYYY').replace('%y','YY').\
@@ -82,10 +83,9 @@ class SimpleAnalyser(object):
             reader = csv.reader(sf, delimiter=self.config['delimiter'], quotechar=self.config['quote_char'])
 
             for line_count, line_data in enumerate(reader):
-                if self.debug:
-                    msg = 'Line[{}] = {}'.format(line_count, line_data)
-                    self.logger.debug(msg)
-                    print(msg)
+                msg = 'Line[{}] = {}'.format(line_count, line_data)
+                self.logger.debug(msg)
+                print(msg)
 
                 if not header_parsed and self.config['has_header']:
                     temp_data_header = dict()
@@ -106,10 +106,9 @@ class SimpleAnalyser(object):
 
                     self.data_header = temp_data_header
                     header_parsed = True
-                    if self.debug:
-                        msg = 'HEADER: {}'.format(self.data_header)
-                        self.logger.info(msg)
-                        print(msg)
+                    msg = 'HEADER: {}'.format(self.data_header)
+                    self.logger.info(msg)
+                    print(msg)
 
                 else:
 
@@ -191,79 +190,78 @@ class SimpleAnalyser(object):
 
         return max_size, ret, rows, columns, number_with_comma, date_formats
 
-    def generate_template(self):
+    def generate_template(self, template_config):
         filepath, ext = os.path.splitext(self.filename)
         path, name = os.path.split(filepath)
 
-        prolog = """load data
-INFILE 'loader2.dat'
-INTO TABLE articles_formatted
-APPEND
-FIELDS TERMINATED BY ','
-("""
-        epilog = """)"""
+        with open('./etc/{}-template.json'.format(self.language), 'r') as fp:
+            template = json.load(fp)
+
+        string_to_write = ''
+        column_counter = 0
+        while column_counter < self.columns:
+
+            item_type = self.column_types[column_counter]
+            item = self.data_header[column_counter]['name']
+            ora_command = ''
+            if item_type == cx_Oracle.STRING:
+                ora_command = '"TRIM(:{})"'.format(item)
+            elif item_type == cx_Oracle.NUMBER:
+                comma = self.number_with_comma[column_counter]
+                if comma:
+                    ora_command = '"TO_NUMBER(TRIM(:{}), \'999,999,999.99\')"'.format(item)
+                else:
+                    ora_command = '"TO_NUMBER(TRIM(:{}))"'.format(item)
+            elif item_type == cx_Oracle.DATETIME:
+                format = self.date_formats[column_counter]
+                ora_command = '"TO_DATE(TRIM(:{}), \'{}\')"'.format(item, self.date_oracle(format.pop(0)))
+
+            string_to_write += '\n{}\t\t\t{},'.format(item, ora_command)
+            column_counter += 1
 
         with open('{}_TEMPLATE.txt'.format(filepath), 'w') as out:
+            out.write('{}'.format(
+                template['prolog'].format(name.upper().replace(' ', '_').rstrip('_0123456789'))
+            )
+            )
+            out.write(string_to_write.rstrip(','))
+            out.write('\n{}'.format(template['epilog']))
 
-            out.write('{}\n'.format(prolog))
-
-            column_counter = 0
-            while column_counter < self.columns:
-
-                item_type = self.column_types[column_counter]
-                item = self.data_header[column_counter]['name']
-                ora_command = ''
-                if item_type == cx_Oracle.STRING:
-                    ora_command = '"TRIM(:{})"'.format(item)
-                elif item_type == cx_Oracle.NUMBER:
-                    comma = self.number_with_comma[column_counter]
-                    if comma:
-                        ora_command = '"TO_NUMBER(TRIM(:{}), \'999,999,999.99\')"'.format(item)
-                    else:
-                        ora_command = '"TO_NUMBER(TRIM(:{}))"'.format(item)
-                elif item_type == cx_Oracle.DATETIME:
-                    format = self.date_formats[column_counter]
-                    ora_command = '"TO_DATE(TRIM(:{}), \'{}\')"'.format(item, self.date_oracle(format.pop(0)))
-
-                out.write('{}\t\t\t{},\n'.format(item, ora_command))
-
-                column_counter += 1
-
-            out.write('{}\n'.format(epilog))
-
-    def generate_import_table(self):
+    def generate_import_table(self, ddl_config):
         filepath, ext = os.path.splitext(self.filename)
         path, name = os.path.split(filepath)
 
-        prolog = 'CREATE TABLE PSN_IMP_{}\n('.format(name.replace(' ', '_').upper())
-        epilog = ');'
+        with open('./etc/{}-ddl.json'.format(self.language), 'r') as fp:
+            template = json.load(fp)
+
+        string_to_write = ''
+        column_counter = 0
+        while column_counter < self.columns:
+
+            item_type = self.column_types[column_counter]
+            item = self.data_header[column_counter]['name']
+            item_size = self.roundup(self.column_sizes[column_counter])
+            if item_size == 0:
+                ora_def_val = ' DEFAULT NULL'
+            else:
+                ora_def_val = ''
+
+            ora_declare = ''
+            if item_type == cx_Oracle.STRING:
+                ora_declare = 'VARCHAR2({}){}'.format(item_size, ora_def_val)
+            elif item_type == cx_Oracle.NUMBER:
+                ora_declare = 'NUMBER{}'.format(ora_def_val)
+            elif item_type == cx_Oracle.DATETIME:
+                ora_declare = 'DATE{}'.format(ora_def_val)
+
+            string_to_write += '\n{}\t\t\t{},'.format(item, ora_declare)
+
+            column_counter += 1
 
         with open('{}_DML.sql'.format(filepath), 'w') as out:
-
-            out.write('{}'.format(prolog))
-            string_to_write = ''
-            column_counter = 0
-            while column_counter < self.columns:
-
-                item_type = self.column_types[column_counter]
-                item = self.data_header[column_counter]['name']
-                item_size = self.roundup(self.column_sizes[column_counter])
-                if item_size == 0:
-                    ora_def_val = ' DEFAULT NULL'
-                else:
-                    ora_def_val = ''
-
-                ora_declare = ''
-                if item_type == cx_Oracle.STRING:
-                    ora_declare = 'VARCHAR2({}){}'.format(item_size, ora_def_val)
-                elif item_type == cx_Oracle.NUMBER:
-                    ora_declare = 'NUMBER{}'.format(ora_def_val)
-                elif item_type == cx_Oracle.DATETIME:
-                    ora_declare = 'DATE{}'.format(ora_def_val)
-
-                string_to_write += '\n{}\t\t\t{},'.format(item, ora_declare)
-
-                column_counter += 1
-
+            out.write('{}'.format(
+                template['prolog'].format(name.upper().replace(' ', '_').rstrip('_0123456789'))
+            )
+            )
             out.write(string_to_write.rstrip(','))
-            out.write('\n{}\n'.format(epilog))
+            out.write('\n{}\n'.format(template['epilog']))
