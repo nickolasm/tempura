@@ -1,19 +1,18 @@
 import csv
 import string
 import cx_Oracle
-# from dateutil.parser import parse
 import datetime as dt
 import os
 import math
 
 
 class SimpleAnalyser(object):
-    def __init__(self, filename, config):
+    def __init__(self, filename, config, logger, debug_flag):
         self.filename = filename
-        self.delimiter = config['delimiter']
-        self.quotechar = config['quotechar']
-        self.has_header = config['has_header']
-        self.fmts = (
+        self.config = config
+        self.logger = logger
+        self.debug = debug_flag
+        self.date_formats = (
             '%Y',
             '%b %d, %Y',
             '%b %d, %Y',
@@ -63,33 +62,32 @@ class SimpleAnalyser(object):
 
         return False, commas_included
 
-    def is_date(self, string_):
-
-        # parse(string_)
-        parsed = []
-        for fmt in self.fmts:
+    def is_date(self, string_to_parse):
+        parsed_date = []
+        for date_format in self.date_formats:
             try:
-                t = dt.datetime.strptime(string_, fmt)
-                parsed.append(fmt)
-                # parsed.append((string_, fmt, t))
+                t = dt.datetime.strptime(string_to_parse, date_format)
+                parsed_date.append(date_format)
                 break
             except ValueError as err:
                 pass
 
-        return len(parsed) > 0, parsed
+        return len(parsed_date) > 0, parsed_date
 
-    def perform_file_analysis(self, DEBUG=False):
+    def perform_file_analysis(self):
 
         header_parsed = False
 
         with (open(self.filename, 'r')) as sf:
-            reader = csv.reader(sf, delimiter=self.delimiter, quotechar=self.quotechar)
+            reader = csv.reader(sf, delimiter=self.config['delimiter'], quotechar=self.config['quote_char'])
 
             for line_count, line_data in enumerate(reader):
-                if DEBUG:
-                    print('line[{}] = {}'.format(line_count, line_data))
+                if self.debug:
+                    msg = 'Line[{}] = {}'.format(line_count, line_data)
+                    self.logger.debug(msg)
+                    print(msg)
 
-                if not header_parsed and self.has_header:
+                if not header_parsed and self.config['has_header']:
                     temp_data_header = dict()
                     for element_count, element_data in enumerate(line_data):
 
@@ -108,8 +106,10 @@ class SimpleAnalyser(object):
 
                     self.data_header = temp_data_header
                     header_parsed = True
-                    if DEBUG:
-                        print(self.data_header)
+                    if self.debug:
+                        msg = 'HEADER: {}'.format(self.data_header)
+                        self.logger.info(msg)
+                        print(msg)
 
                 else:
 
@@ -142,6 +142,8 @@ class SimpleAnalyser(object):
 
         self.column_sizes, self.column_types, self.rows, self.columns, self.number_with_comma, self.date_formats = \
             self.consintency_check_and_determine_columns()
+
+        self.logger.info('Data rows: {}, Data Columns: {}'.format(self.rows, self.columns))
 
     def consintency_check_and_determine_columns(self):
 
